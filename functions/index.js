@@ -4,6 +4,7 @@ const admin = require("firebase-admin");
 const axios = require("axios");
 
 const { equilizeUserBaseMock } = require("./mock/equilize-user-base.mock");
+const { searchProcessMock } = require("./mock/search-process.mock");
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -151,10 +152,37 @@ const buildUserProcessModel = (data, userOABs) => {
   });
 };
 
+const clientExists = async (clientDTO) => {
+  if (!!clientDTO.cpf) {
+    const dbClientDataSnapshot = await db
+      .collection("Client")
+      .where("cpf", "==", clientDTO.cpf)
+      .where("user", "==", clientDTO.user)
+      .get();
+
+    if (!dbClientDataSnapshot.empty) return dbClientDataSnapshot.docs[0].ref;
+    else return null;
+  }
+
+  if (!!clientDTO.cnpj) {
+    const dbClientDataSnapshot = await db
+      .collection("Client")
+      .where("user", "==", clientDTO.user)
+      .where("cnpj", "==", clientDTO.cnpj)
+      .get();
+
+    if (!dbClientDataSnapshot.empty) return dbClientDataSnapshot.docs[0].ref;
+    else return null;
+  }
+
+  return null;
+};
+
 const registerClients = async (processes, userRef) => {
   try {
     const data = processes.map(({ clients }) => clients).flat();
     const clients = removeDuplicate(data, "document");
+    const clientRefs = [];
 
     for await (let client of clients) {
       const clientDTO = {
@@ -208,16 +236,31 @@ const registerClients = async (processes, userRef) => {
         ],
       };
 
-      await admin.firestore().collection("Client").add(clientDTO);
+      const currentClientRef = await clientExists(clientDTO);
+
+      if (!currentClientRef) {
+        const newClient = await admin
+          .firestore()
+          .collection("Client")
+          .add(clientDTO);
+
+        const newClientRef = db.collection("Client").doc(newClient.id);
+        clientRefs.push(newClientRef);
+      } else clientRefs.push(currentClientRef);
     }
+
+    return clientRefs;
   } catch (error) {
     throw error;
   }
 };
 
-const registerProcesses = async (processes, userRef) => {
+const registerProcesses = async (processes, userRef, clientsRefs = []) => {
   try {
-    const clients = await getCollectionByUser("Client", userRef);
+    const result = [];
+    const clients = await getDataFromRefs(clientsRefs);
+    // const clients = await getCollectionByUser("Client", userRef);
+    console.log("registerProcesses>processes", processes.length);
 
     const getClientRef = (person) => {
       const dbClientDocumentKey = person.isPJ ? "cnpj" : "cpf";
@@ -237,8 +280,16 @@ const registerProcesses = async (processes, userRef) => {
         .filter((item) => !!item);
 
       const processDTO = { ...process, user: userRef, clients };
-      await admin.firestore().collection("Process").add(processDTO);
+      const newProcess = await admin
+        .firestore()
+        .collection("Process")
+        .add(processDTO);
+
+      const newProcessRef = db.collection("Process").doc(newProcess.id);
+      result.push(newProcessRef);
     }
+
+    return result;
   } catch (error) {
     throw error;
   }
@@ -253,32 +304,34 @@ const registerIntimationMonitoring = async (intimations) => {
       processo_id: registerProcessId,
     })
       .then(() => {})
-      .catch(() => {
+      .catch((error) => {
         logger.info(
-          `+++ intimation Monitoring  (PROCESS: ${process.cnj}) +++`,
-          error,
+          `+++ intimation Monitoring  (PROCESS: ${registerProcessId}) +++`,
           { structuredData: true }
         );
       });
   });
 };
+// 608224035;
 
-const registerIntimation = async (userRef) => {
-  const result = [];
-  const dbProcesses = [];
-
+const registerIntimation = async (userRef, processRefs) => {
   const { api_v1, api_token } = await getConfig();
 
-  const dbProcessesData = await db
-    .collection("Process")
-    .where("user", "==", userRef)
-    .where("archived", "==", false)
-    .get();
+  const result = [];
+  let dbProcesses = [];
 
-  dbProcessesData.docs.forEach((doc) => {
-    const data = doc.data();
-    dbProcesses.push({ id: doc.id, ...data });
-  });
+  if (!processRefs || !processRefs.length) {
+    const dbProcessesData = await db
+      .collection("Process")
+      .where("user", "==", userRef)
+      .where("archived", "==", false)
+      .get();
+
+    dbProcessesData.docs.forEach((doc) => {
+      const data = doc.data();
+      dbProcesses.push({ id: doc.id, ...data });
+    });
+  } else dbProcesses = await getDataFromRefs(processRefs);
 
   for await (let process of dbProcesses) {
     try {
@@ -306,6 +359,7 @@ const registerIntimation = async (userRef) => {
 
         type: intimation.tipo,
         date: intimation.data,
+        registerProcessId: id,
         registerId: intimation.id,
         section: intimation.secao,
         subType: intimation.subtipo,
@@ -314,7 +368,6 @@ const registerIntimation = async (userRef) => {
         complement: intimation.complemento,
         subProccess: intimation.subprocesso,
         categoryText: intimation.texto_categoria,
-        registerProcessId: intimation.processo_id,
 
         processResume: {
           cnj: dbProcessData.cnj,
@@ -346,6 +399,26 @@ const registerIntimation = async (userRef) => {
 
   return result;
 };
+
+async function getDataFromRefs(refs) {
+  const dataList = [];
+
+  for (const ref of refs) {
+    try {
+      const docSnapshot = await ref.get();
+      if (docSnapshot.exists) {
+        const data = docSnapshot.data();
+        dataList.push({ id: ref.id, ...data });
+      } else {
+        console.log("Documento não encontrado para a referência:", ref.id);
+      }
+    } catch (error) {
+      console.error("Erro ao buscar documento:", error);
+    }
+  }
+
+  return dataList;
+}
 //#endregion utils
 
 // #region Database
@@ -395,8 +468,8 @@ exports.equalizeUserBase = onRequest(
 
       const processes = buildUserProcessModel(data, userDocuments);
 
-      await registerClients(processes, userRef);
-      await registerProcesses(processes, userRef);
+      const clients = await registerClients(processes, userRef);
+      await registerProcesses(processes, userRef, clients);
 
       axios.post(
         "https://equalizeUserIntimationBase-fp76zcdymq-uc.a.run.app",
@@ -545,6 +618,55 @@ exports.updateProcessArchiving = onRequest(async (request, response) => {
     });
   } catch (error) {
     console.error("+++ [updateProcessArchiving] +++", error);
+    response.status(500).json({
+      message: "Error",
+      data: error.message,
+    });
+  }
+});
+
+exports.seachProcess = onRequest(async (request, response) => {
+  try {
+    console.log("+++ INIT seachProcess +++", request.body);
+
+    const { cnj, userId, isDevMode } = request.body;
+    const { api_v2, api_token } = await getConfig();
+
+    const dbUserRef = db.collection("User").doc(userId);
+    const userDocuments = await getCollectionByUser("UserOAB", dbUserRef);
+
+    let processResponse = {};
+
+    if (isDevMode) processResponse = searchProcessMock;
+    else {
+      const { data } = await handleApiCall(
+        `${api_v2}/processos/numero_cnj/${cnj}`,
+        api_token
+      );
+
+      processResponse = data;
+    }
+
+    if (!Object.keys(processResponse).length) {
+      response.status(404).json({
+        message: "Processo não encontrado",
+        data: {},
+      });
+      return;
+    }
+
+    const processes = buildUserProcessModel([processResponse], userDocuments);
+    const dbClients = await registerClients(processes, dbUserRef);
+    const dbProcess = await registerProcesses(processes, dbUserRef, dbClients);
+    const dbIntimation = await registerIntimation(dbUserRef, dbProcess);
+    await registerIntimationMonitoring(dbIntimation);
+
+    response.json({
+      message: "success",
+      data: dbProcess,
+    });
+  } catch (error) {
+    console.error("+++ [seachProcess] +++", error);
     response.status(500).json({
       message: "Error",
       data: error.message,

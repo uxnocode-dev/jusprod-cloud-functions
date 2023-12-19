@@ -14,6 +14,7 @@ const handleApiCall = (endpoint, token, method = "get", body) => {
   const headers = { headers: { Authorization: `Bearer ${token}` } };
 
   if (method === "get") return axios.get(endpoint, headers);
+  if (method === "delete") return axios.delete(endpoint, headers);
   else return axios.post(endpoint, body, headers);
 };
 
@@ -36,6 +37,21 @@ const removeDuplicate = (list, key) => {
     seen.add(el[key]);
     return !duplicate;
   });
+};
+
+const getMonitoring = async (url = "", items = []) => {
+  try {
+    const { api_v1, api_token } = await getConfig();
+    const endpoint = url || `${api_v1}/monitoramentos?page=1`;
+    const { data } = await handleApiCall(endpoint, api_token);
+
+    if (data?.links?.next)
+      return await getMonitoring(data?.links?.next, data?.items);
+    else return items;
+  } catch (error) {
+    logger.error("+++ getMonitoring +++", error, { structuredData: true });
+    throw error;
+  }
 };
 
 const getUserOABProcessV1 = async (
@@ -312,7 +328,6 @@ const registerIntimationMonitoring = async (intimations) => {
       });
   });
 };
-// 608224035;
 
 const registerIntimation = async (userRef, processRefs) => {
   const { api_v1, api_token } = await getConfig();
@@ -450,12 +465,31 @@ const getCollectionByUser = async (collectionName, userRef) => {
   return result;
 };
 
+const corsSetings = (request, response) => {
+  response.set("Access-Control-Allow-Origin", "*");
+  response.set("Access-Control-Allow-Methods", "GET, POST, PUT");
+  response.set("Content-Type", "application/json; charset=utf-8");
+  response.set("Access-Control-Allow-Headers", "Content-Type");
+
+  if (request.method === "OPTIONS") {
+    response.status(204).send("");
+    return true;
+  }
+
+  response.setHeader("Content-Type", "application/json");
+
+  return false;
+};
+
 // #endregion Database
 
 exports.equalizeUserBase = onRequest(
-  { timeoutSeconds: 380 },
+  { timeoutSeconds: 500 },
   async (request, response) => {
     logger.info("+++ INIT EQUALIZE USER BASE +++", { structuredData: true });
+
+    const isPreflight = corsSetings(request, response);
+    if (isPreflight) return;
 
     try {
       let data = [];
@@ -471,10 +505,10 @@ exports.equalizeUserBase = onRequest(
       const clients = await registerClients(processes, userRef);
       await registerProcesses(processes, userRef, clients);
 
-      axios.post(
-        "https://equalizeUserIntimationBase-fp76zcdymq-uc.a.run.app",
-        request?.body
-      );
+      const intimations = await registerIntimation(userRef);
+      const intimationMonitoring = intimations.slice(0, 200);
+
+      registerIntimationMonitoring(intimationMonitoring);
 
       response.json({
         message: "success",
@@ -499,6 +533,9 @@ exports.equalizeUserIntimationBase = onRequest(
     logger.info("+++ INIT equalizeUserIntimationBase +++", request.body, {
       structuredData: true,
     });
+
+    const isPreflight = corsSetings(request, response);
+    if (isPreflight) return;
 
     try {
       const userRef = db.collection("User").doc(request.body.userId);
@@ -532,14 +569,8 @@ const puppeteer = require("puppeteer");
 exports.exportPdf = onRequest({ memory: "1GiB" }, async (request, response) => {
   try {
     console.log("+++ INIT EXPORT PDF +++", request.body);
-
-    response.set("Access-Control-Allow-Origin", "*");
-    response.set("Access-Control-Allow-Methods", "GET, POST");
-
-    if (request.method === "OPTIONS") {
-      response.status(204).send("");
-      return;
-    }
+    const isPreflight = corsSetings(request, response);
+    if (isPreflight) return;
 
     const { content, fileName } = request.body;
     const isLocalHost = request.headers.host.includes("localhost");
@@ -579,13 +610,24 @@ exports.exportPdf = onRequest({ memory: "1GiB" }, async (request, response) => {
 exports.updateProcessArchiving = onRequest(async (request, response) => {
   try {
     console.log("+++ INIT updateProcessArchiving +++", request.body);
+    const isPreflight = corsSetings(request, response);
+    if (isPreflight) return;
 
     const { archived, processId, userId } = request.body;
-    const { api_v1, api_v2, api_token } = await getConfig();
+    const { api_v1, api_token } = await getConfig();
 
     const dbUserRef = db.collection("User").doc(userId);
     const dbProcessRef = db.collection("Process").doc(processId);
     const dbProcessData = (await dbProcessRef.get()).data();
+
+    if (dbProcessData.archived === archived) {
+      response.json({
+        message: "O processo já está no status atual",
+        data: {},
+      });
+
+      return;
+    }
 
     await dbProcessRef.update({ archived });
     await admin
@@ -599,22 +641,37 @@ exports.updateProcessArchiving = onRequest(async (request, response) => {
         typeAction: `Processo ${archived ? "arquivado" : "reativado"}`,
       });
 
-    // const { data: processResponse } = await handleApiCall(
-    //   `${api_v2}/processos/numero_cnj/${dbProcessData.cnj}`,
-    //   api_token
-    // );
+    if (archived) {
+      const data = await getMonitoring();
 
-    // if (!Object.keys(processResponse).length) {
-    //   response.status(404).json({
-    //     message: "Processo não encontrado",
-    //     data: {},
-    //   });
-    //   return;
-    // }
+      const [monitoring] = data.filter(
+        (item) => item.processo_id === dbProcessData.registerId
+      );
+
+      if (!monitoring) {
+        response.status(404).json({
+          message: "Monitoramento não encontrado",
+          data: {},
+        });
+
+        return;
+      }
+
+      await handleApiCall(
+        `${api_v1}/monitoramentos/${monitoring.id}`,
+        api_token,
+        "delete"
+      );
+    } else {
+      handleApiCall(`${api_v1}/monitoramentos`, api_token, "post", {
+        tipo: "processo",
+        processo_id: dbProcessData.registerId,
+      });
+    }
 
     response.json({
       message: "success",
-      data: dbProcessData,
+      data: {},
     });
   } catch (error) {
     console.error("+++ [updateProcessArchiving] +++", error);
@@ -628,6 +685,8 @@ exports.updateProcessArchiving = onRequest(async (request, response) => {
 exports.seachProcess = onRequest(async (request, response) => {
   try {
     console.log("+++ INIT seachProcess +++", request.body);
+    const isPreflight = corsSetings(request, response);
+    if (isPreflight) return;
 
     const { cnj, userId, isDevMode } = request.body;
     const { api_v2, api_token } = await getConfig();
@@ -671,5 +730,98 @@ exports.seachProcess = onRequest(async (request, response) => {
       message: "Error",
       data: error.message,
     });
+  }
+});
+
+exports.getUserDocumentPaginate = onRequest(async (req, res) => {
+  try {
+    const isPreflight = corsSetings(req, res);
+    if (isPreflight) return;
+
+    const { currentPage, itemsPerPage, userId, documentPathId, filter } =
+      req.body;
+
+    const userRef = db.collection("User").doc(userId);
+    const documentPathRef = db.collection("DocumentPath").doc(documentPathId);
+
+    if (!currentPage || !itemsPerPage) {
+      return res.status(400).json({ error: "Parâmetros inválidos." });
+    }
+
+    const page = parseInt(currentPage, 10);
+    const perPage = parseInt(itemsPerPage, 10);
+
+    const startIndex = (page - 1) * perPage;
+
+    let query = db.collection("Document");
+    query = query.where("users", "array-contains", userRef);
+    query = query.where("documentPath", "==", documentPathRef);
+
+    if (filter?.name) query = query.where("name", "==", filter.name);
+
+    if (filter?.processCnj)
+      query = query.where("processCnj", "==", filter.processCnj);
+
+    if (filter?.clientDocument)
+      query = query.where("clientDocument", "==", filter.clientDocument);
+
+    if (filter?.uploadDate) {
+      const dateToFilter = new Date(filter.uploadDate);
+
+      const startOfDay = new Date(dateToFilter);
+      startOfDay.setHours(0, 0, 0, 0);
+
+      const endOfDay = new Date(dateToFilter);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      query = query
+        .where("dateCreation", ">=", startOfDay)
+        .where("dateCreation", "<=", endOfDay);
+    }
+
+    const itemsSnapshot = await query.offset(startIndex).limit(perPage).get();
+
+    const items = [];
+    itemsSnapshot.forEach((doc) => {
+      items.push({ id: doc.id, ...doc.data() });
+    });
+
+    const totalItemsSnapshot = await query.get();
+    const totalItems = totalItemsSnapshot.size;
+    const totalPages = Math.ceil(totalItems / perPage);
+
+    const transformedData = items.map((item) => {
+      const dateCreation = new Date(item.dateCreation._seconds * 1000)
+        .toISOString()
+        .split("T")[0];
+
+      return {
+        id: item.id,
+        dateCreation,
+        url: item.url,
+        name: item.name,
+        processCnj: item.processCnj,
+        templateHTML: item.templateHTML,
+        clientDocument: item.clientDocument,
+        client: item?.client?._path?.segments[1] || "",
+        process: item?.process?._path?.segments[1] || "",
+        documentPath: item?.documentPath?._path?.segments[1] || "",
+        users: item.users.map((user) => user._path.segments[1] || ""),
+      };
+    });
+
+    const result = {
+      page,
+      totalItems,
+      totalPages,
+      pageSize: perPage,
+      filter,
+      items: transformedData,
+    };
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("Erro:", error);
+    return res.status(500).json({ error: "Erro interno do servidor." });
   }
 });

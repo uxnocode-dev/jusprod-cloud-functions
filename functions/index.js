@@ -508,7 +508,7 @@ exports.equalizeUserBase = onRequest(
       const intimations = await registerIntimation(userRef);
       const intimationMonitoring = intimations.slice(0, 200);
 
-      registerIntimationMonitoring(intimationMonitoring);
+      await registerIntimationMonitoring(intimationMonitoring);
 
       response.json({
         message: "success",

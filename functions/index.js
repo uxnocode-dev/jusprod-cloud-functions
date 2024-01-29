@@ -9,6 +9,11 @@ const { searchProcessMock } = require("./mock/search-process.mock");
 admin.initializeApp();
 const db = admin.firestore();
 
+const processLimitByPlan = {
+  gold: 60,
+  premium: 200,
+};
+
 //#region utils
 const handleApiCall = (endpoint, token, method = "get", body) => {
   const headers = { headers: { Authorization: `Bearer ${token}` } };
@@ -118,6 +123,33 @@ const buildUserProcessList = async (documents) => {
     for await (let item of documents) {
       const itemsV2 = await getUserOABProcessV2("", item.state, item.number);
       result.push(...itemsV2);
+    }
+
+    return result;
+  } catch (error) {
+    throw error;
+  }
+};
+
+const buildUserProcessListByPlan = async (documents, limit) => {
+  try {
+    const result = [];
+    const maxProcesses = limit;
+    let processCount = 0;
+
+    for await (let item of documents) {
+      if (processCount >= maxProcesses) {
+        break;
+      }
+
+      const itemsV2 = await getUserOABProcessV2("", item.state, item.number);
+      result.push(...itemsV2.slice(0, maxProcesses - processCount));
+      processCount += itemsV2.length;
+
+      if (processCount > maxProcesses) {
+        result.splice(maxProcesses, result.length - maxProcesses);
+        break;
+      }
     }
 
     return result;
@@ -363,6 +395,16 @@ const registerIntimation = async (userRef, processRefs) => {
       );
 
       const [intimation] = data.items;
+
+      const intimationExists = await admin
+        .firestore()
+        .collection("Intimation")
+        .where("registerId", "==", intimation.id)
+        .get();
+
+      if (!intimationExists.empty) {
+        continue;
+      }
 
       const dbProcessRef = db.collection("Process").doc(process.id);
       const dbProcessData = (await dbProcessRef.get()).data();
@@ -825,3 +867,135 @@ exports.getUserDocumentPaginate = onRequest(async (req, res) => {
     return res.status(500).json({ error: "Erro interno do servidor." });
   }
 });
+
+exports.equalizeUserIntimationFree = onRequest(
+  { timeoutSeconds: 500 },
+  async (request, response) => {
+    logger.info("+++ INIT EQUALIZE USER BASE +++", { structuredData: true });
+
+    const isPreflight = corsSetings(request, response);
+    if (isPreflight) return;
+
+    try {
+      let data = [];
+      const userRef = db.collection("User").doc(request.body.userId);
+
+      const processes = await getCollectionByUser("Process", userRef);
+
+      const intimations = await registerIntimation(userRef);
+      const intimationMonitoring = intimations.slice(0, 200);
+
+      await registerIntimationMonitoring(intimationMonitoring);
+
+      response.json({
+        message: "success",
+        data: {
+          allProcessesCount: data.length,
+          activeProcessesCount: processes.length,
+        },
+      });
+    } catch (error) {
+      logger.error("+++ ERROR EQUALIZE USER BASE +++", error, {
+        structuredData: true,
+      });
+
+      response.status(400).json({ message: "error", error });
+    }
+  }
+);
+
+exports.equalizeUserBaseGold = onRequest(
+  { timeoutSeconds: 500 },
+  async (request, response) => {
+    logger.info("+++ INIT EQUALIZE USER BASE +++", { structuredData: true });
+
+    const isPreflight = corsSetings(request, response);
+    if (isPreflight) return;
+
+    try {
+      let data = [];
+      const isDevMode = !!request?.body?.isDevMode;
+      const userRef = db.collection("User").doc(request.body.userId);
+      const userDocuments = await getCollectionByUser("UserOAB", userRef);
+
+      if (isDevMode) data = equilizeUserBaseMock;
+      else
+        data = await buildUserProcessListByPlan(
+          userDocuments,
+          processLimitByPlan.gold
+        );
+
+      const processes = buildUserProcessModel(data, userDocuments);
+
+      const clients = await registerClients(processes, userRef);
+      await registerProcesses(processes, userRef, clients);
+
+      const intimations = await registerIntimation(userRef);
+      const intimationMonitoring = intimations.slice(0, 200);
+
+      await registerIntimationMonitoring(intimationMonitoring);
+
+      response.json({
+        message: "success",
+        data: {
+          allProcessesCount: data.length,
+          activeProcessesCount: processes.length,
+        },
+      });
+    } catch (error) {
+      logger.error("+++ ERROR EQUALIZE USER BASE +++", error, {
+        structuredData: true,
+      });
+
+      response.status(400).json({ message: "error", error });
+    }
+  }
+);
+
+exports.equalizeUserBasePremium = onRequest(
+  { timeoutSeconds: 500 },
+  async (request, response) => {
+    logger.info("+++ INIT EQUALIZE USER BASE +++", { structuredData: true });
+
+    const isPreflight = corsSetings(request, response);
+    if (isPreflight) return;
+
+    try {
+      let data = [];
+      const isDevMode = !!request?.body?.isDevMode;
+      const userRef = db.collection("User").doc(request.body.userId);
+      const userDocuments = await getCollectionByUser("UserOAB", userRef);
+
+      if (isDevMode) data = equilizeUserBaseMock;
+      else
+        data = await buildUserProcessListByPlan(
+          userDocuments,
+          processLimitByPlan.premium
+        );
+
+      const processes = buildUserProcessModel(data, userDocuments);
+
+      const clients = await registerClients(processes, userRef);
+      await registerProcesses(processes, userRef, clients);
+
+      const intimations = await registerIntimation(userRef);
+      const intimationMonitoring = intimations.slice(0, 200);
+
+      await registerIntimationMonitoring(intimationMonitoring);
+
+      response.json({
+        message: "success",
+        data: {
+          allProcessesCount: data.length,
+          activeProcessesCount: processes.length,
+        },
+      });
+    } catch (error) {
+      logger.error("+++ ERROR EQUALIZE USER BASE +++", error, {
+        structuredData: true,
+      });
+
+      response.status(400).json({ message: "error", error });
+    }
+  }
+);

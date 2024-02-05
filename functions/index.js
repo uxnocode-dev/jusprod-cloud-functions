@@ -9,11 +9,6 @@ const { searchProcessMock } = require("./mock/search-process.mock");
 admin.initializeApp();
 const db = admin.firestore();
 
-const processLimitByPlan = {
-  gold: 60,
-  premium: 200,
-};
-
 //#region utils
 const handleApiCall = (endpoint, token, method = "get", body) => {
   const headers = { headers: { Authorization: `Bearer ${token}` } };
@@ -922,7 +917,7 @@ exports.equalizeUserBaseGold = onRequest(
       else
         data = await buildUserProcessListByPlan(
           userDocuments,
-          processLimitByPlan.gold
+          60
         );
 
       const processes = buildUserProcessModel(data, userDocuments);
@@ -970,7 +965,7 @@ exports.equalizeUserBasePremium = onRequest(
       else
         data = await buildUserProcessListByPlan(
           userDocuments,
-          processLimitByPlan.premium
+          400
         );
 
       const processes = buildUserProcessModel(data, userDocuments);

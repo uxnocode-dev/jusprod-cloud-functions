@@ -10,6 +10,15 @@ admin.initializeApp();
 const db = admin.firestore();
 
 //#region utils
+function getUnixTimestamp(date = null) {
+  const actualDate = new Date(date);
+  if (isNaN(actualDate.getTime())) {
+    actualDate.setTime(Date.now());
+  }
+
+  return Math.floor(actualDate.getTime() / 1000);
+}
+
 const handleApiCall = (endpoint, token, method = "get", body) => {
   const headers = { headers: { Authorization: `Bearer ${token}` } };
 
@@ -472,15 +481,6 @@ async function getDataFromRefs(refs) {
   }
 
   return dataList;
-}
-
-function getUnixTimestamp(date = null) {
-  const actualDate = new Date(date);
-  if (isNaN(actualDate.getTime())) {
-    actualDate.setTime(Date.now());
-  }
-
-  return Math.floor(actualDate.getTime() / 1000);
 }
 //#endregion utils
 

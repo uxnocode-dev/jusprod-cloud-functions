@@ -237,6 +237,7 @@ const registerClients = async (processes, userRef) => {
         isFavorite: false,
         cpf: !client.isPJ ? client.document : "",
         cnpj: client.isPJ ? client.document : "",
+        createdAt: getUnixTimestamp(),
 
         rg: "",
         cep: "",
@@ -420,6 +421,7 @@ const registerIntimation = async (userRef, processRefs) => {
         complement: intimation.complemento,
         subProccess: intimation.subprocesso,
         categoryText: intimation.texto_categoria,
+        read: false,
 
         processResume: {
           cnj: dbProcessData.cnj,
@@ -470,6 +472,15 @@ async function getDataFromRefs(refs) {
   }
 
   return dataList;
+}
+
+function getUnixTimestamp(date = null) {
+  const actualDate = new Date(date);
+  if (isNaN(actualDate.getTime())) {
+    actualDate.setTime(Date.now());
+  }
+
+  return Math.floor(actualDate.getTime() / 1000);
 }
 //#endregion utils
 

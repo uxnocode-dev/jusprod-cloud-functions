@@ -332,7 +332,7 @@ const registerProcesses = async (processes, userRef, clientsRefs = []) => {
         .map((person) => getClientRef(person))
         .filter((item) => !!item);
 
-      const processDTO = { ...process, user: userRef, clients };
+      const processDTO = { ...process, user: userRef, clients, archived: true };
       const newProcess = await admin
         .firestore()
         .collection("Process")

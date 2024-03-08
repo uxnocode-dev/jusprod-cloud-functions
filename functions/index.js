@@ -768,8 +768,8 @@ exports.seachProcess = onRequest(async (request, response) => {
     // const dbClients = await registerClients(processes, dbUserRef);
     // const dbProcess = await registerProcesses(processes, dbUserRef, dbClients);
     const dbProcess = await registerProcesses(processes, dbUserRef);
-    const dbIntimation = await registerIntimation(dbUserRef, dbProcess);
-    await registerIntimationMonitoring(dbIntimation);
+    // const dbIntimation = await registerIntimation(dbUserRef, dbProcess);
+    // await registerIntimationMonitoring(dbIntimation);
 
     response.json({
       message: "success",

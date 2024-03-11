@@ -932,8 +932,9 @@ exports.equalizeUserBaseGold = onRequest(
 
       const processes = buildUserProcessModel(data, userDocuments);
 
-      const clients = await registerClients(processes, userRef);
-      await registerProcesses(processes, userRef, clients);
+      // const clients = await registerClients(processes, userRef);
+      // await registerProcesses(processes, userRef, clients);
+      await registerProcesses(processes, userRef);
 
       // const intimations = await registerIntimation(userRef);
       // const intimationMonitoring = intimations.slice(0, 200);

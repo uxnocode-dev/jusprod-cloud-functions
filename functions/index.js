@@ -328,6 +328,17 @@ const registerProcesses = async (processes, userRef, clientsRefs = []) => {
     };
 
     for await (let process of processes) {
+      const existingProcessSnapshot = await db
+        .collection("Process")
+        .where("cnj", "==", process.cnj)
+        .where("user", "==", userRef)
+        .get();
+
+      if (!existingProcessSnapshot.empty) {
+        console.log(`Processo ${process.cnj} já está cadastrado para o usuário ${userRef.id}`);
+        continue;
+      }
+
       const clients = process.clients
         .map((person) => getClientRef(person))
         .filter((item) => !!item);
@@ -421,6 +432,7 @@ const registerIntimation = async (userRef, processRefs) => {
 
         type: intimation.tipo,
         date: intimation.data,
+        creation_date: new Date(intimation.data),
         registerProcessId: id,
         registerId: intimation.id,
         section: intimation.secao,
@@ -678,16 +690,6 @@ exports.updateProcessArchiving = onRequest(async (request, response) => {
     }
 
     await dbProcessRef.update({ archived });
-    await admin
-      .firestore()
-      .collection("historicalProcesses")
-      .add({
-        userRef: dbUserRef,
-        cnj: dbProcessData.cnj,
-        processRef: dbProcessRef,
-        datetimeAction: new Date(),
-        typeAction: `Processo ${archived ? "Monitorado" : "Não Monitorado"}`,
-      });
 
     if (archived) {
       const data = await getMonitoring();
@@ -705,19 +707,58 @@ exports.updateProcessArchiving = onRequest(async (request, response) => {
         return;
       }
 
-      await handleApiCall(
-        `${api_v1}/monitoramentos/${monitoring.id}`,
-        api_token,
-        "delete"
-      );
+      const otherUsersMonitoring = await db
+        .collection("Process")
+        .where("cnj", "==", dbProcessData.cnj)
+        .where("user", "!=", dbUserRef)
+        .where("archived", "==", false)
+        .get();
+
+      if (otherUsersMonitoring.empty) {
+        await handleApiCall(
+          `${api_v1}/monitoramentos/${monitoring.id}`,
+          api_token,
+          "delete"
+        );
+      } else {
+        console.log(`Processo ${dbProcessData.cnj} ainda está sendo monitorado por outro usuário.`);
+      }
     } else {
       const intimations = await registerIntimation(dbUserRef);
       await registerIntimationMonitoring(intimations);
-      handleApiCall(`${api_v1}/monitoramentos`, api_token, "post", {
+      await handleApiCall(`${api_v1}/monitoramentos`, api_token, "post", {
         tipo: "processo",
         processo_id: dbProcessData.registerId,
       });
+
+      const webhookStatus = await handleApiCall(
+        `${api_v1}/monitoramentos/${dbProcessData.registerId}/webhook`,
+        api_token
+      );
+
+      if (!webhookStatus.data.active) {
+        await handleApiCall(
+          `${api_v1}/webhooks`,
+          api_token,
+          "post",
+          {
+            processo_id: dbProcessData.registerId,
+            url: "URL_DO_SEU_WEBHOOK_AQUI"
+          }
+        );
+      }
     }
+
+    await admin
+      .firestore()
+      .collection("historicalProcesses")
+      .add({
+        userRef: dbUserRef,
+        cnj: dbProcessData.cnj,
+        processRef: dbProcessRef,
+        datetimeAction: new Date(),
+        typeAction: `Processo ${archived ? "Monitorado" : "Não Monitorado"}`,
+      });
 
     response.json({
       message: "success",
@@ -957,6 +998,92 @@ exports.equalizeUserBaseGold = onRequest(
     }
   }
 );
+
+exports.reviewAndAdjustMonitoring = onRequest(async (request, response) => {
+  try {
+    console.log("+++ INIT reviewAndAdjustMonitoring +++", request.body);
+    const isPreflight = corsSetings(request, response);
+    if (isPreflight) return;
+
+    const { userId } = request.body;
+    const { api_v1, api_token } = await getConfig();
+
+    const dbUserRef = db.collection("User").doc(userId);
+
+    const userProcessesSnapshot = await db
+      .collection("Process")
+      .where("user", "==", dbUserRef)
+      .where("archived", "==", false)
+      .get();
+
+    if (userProcessesSnapshot.empty) {
+      response.json({
+        message: "Nenhum processo encontrado para o usuário",
+        data: {},
+      });
+      return;
+    }
+
+    const userProcesses = [];
+    userProcessesSnapshot.forEach(doc => {
+      userProcesses.push({ id: doc.id, ...doc.data() });
+    });
+
+    for (const process of userProcesses) {
+      const data = await getMonitoring();
+
+      const [monitoring] = data.filter(
+        (item) => item.processo_id === process.registerId
+      );
+
+      if (!monitoring) {
+        console.log(`Monitoramento não encontrado para o processo ${process.cnj}`);
+        continue;
+      }
+
+      const otherUsersMonitoring = await db
+        .collection("Process")
+        .where("cnj", "==", process.cnj)
+        .where("user", "!=", dbUserRef)
+        .where("archived", "==", false)
+        .get();
+
+      if (otherUsersMonitoring.empty) {
+        await handleApiCall(
+          `${api_v1}/monitoramentos/${monitoring.id}`,
+          api_token,
+          "delete"
+        );
+      } else {
+        console.log(`Processo ${process.cnj} ainda está sendo monitorado por outro usuário.`);
+      }
+
+      await db.collection("Process").doc(process.id).update({ archived: true });
+
+      await admin
+        .firestore()
+        .collection("historicalProcesses")
+        .add({
+          userRef: dbUserRef,
+          cnj: process.cnj,
+          processRef: db.collection("Process").doc(process.id),
+          datetimeAction: new Date(),
+          typeAction: `Processo Não Monitorado`,
+        });
+    }
+
+    response.json({
+      message: "success",
+      data: {},
+    });
+  } catch (error) {
+    console.error("+++ [reviewAndAdjustMonitoring] +++", error);
+    response.status(500).json({
+      message: "Error",
+      data: error.message,
+    });
+  }
+});
 
 // exports.equalizeUserBasePremium = onRequest(
 //   { timeoutSeconds: 500 },

@@ -685,7 +685,6 @@ exports.updateProcessArchiving = onRequest(async (request, response) => {
         message: "O processo já está no status atual",
         data: {},
       });
-
       return;
     }
 
@@ -703,7 +702,6 @@ exports.updateProcessArchiving = onRequest(async (request, response) => {
           message: "Monitoramento não encontrado",
           data: {},
         });
-
         return;
       }
 
@@ -730,23 +728,6 @@ exports.updateProcessArchiving = onRequest(async (request, response) => {
         tipo: "processo",
         processo_id: dbProcessData.registerId,
       });
-
-      const webhookStatus = await handleApiCall(
-        `${api_v1}/monitoramentos/${dbProcessData.registerId}/webhook`,
-        api_token
-      );
-
-      if (!webhookStatus.data.active) {
-        await handleApiCall(
-          `${api_v1}/webhooks`,
-          api_token,
-          "post",
-          {
-            processo_id: dbProcessData.registerId,
-            url: "URL_DO_SEU_WEBHOOK_AQUI"
-          }
-        );
-      }
     }
 
     await admin
@@ -772,6 +753,7 @@ exports.updateProcessArchiving = onRequest(async (request, response) => {
     });
   }
 });
+
 
 exports.seachProcess = onRequest(async (request, response) => {
   try {

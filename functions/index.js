@@ -689,9 +689,11 @@ exports.updateProcessArchiving = onRequest(async (request, response) => {
     }
 
     await dbProcessRef.update({ archived });
+    console.log(`Process ${processId} updated to archived: ${archived}`);
 
     if (archived) {
       const data = await getMonitoring();
+      console.log(`Monitoring data fetched for process ${processId}:`, data.length, 'items');
 
       const [monitoring] = data.filter(
         (item) => item.processo_id === dbProcessData.registerId
@@ -723,6 +725,7 @@ exports.updateProcessArchiving = onRequest(async (request, response) => {
       }
     } else {
       const intimations = await registerIntimation(dbUserRef);
+      console.log(`Intimations registered:`, intimations.length);
       await registerIntimationMonitoring(intimations);
       await handleApiCall(`${api_v1}/monitoramentos`, api_token, "post", {
         tipo: "processo",
